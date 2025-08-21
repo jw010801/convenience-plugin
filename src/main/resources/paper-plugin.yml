@@ -2,3 +2,19 @@ name: ConveniencePlugin
 version: '1.0-SNAPSHOT'
 main: com.github.jw010801.conveniencePlugin.ConveniencePlugin
 api-version: '1.21'
+description: 서버 편의성을 위한 기본 명령어들을 제공하는 플러그인
+author: jw010801
+
+commands:
+  spawn:
+    description: 서버 스폰 지점으로 텔레포트합니다
+    usage: /spawn
+    aliases: [스폰]
+  sethome:
+    description: 현재 위치를 집으로 설정합니다
+    usage: /sethome
+    aliases: [집설정]
+  home:
+    description: 설정한 집으로 텔레포트합니다
+    usage: /home
+    aliases: [집]
