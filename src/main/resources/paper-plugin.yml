@@ -1,0 +1,4 @@
+name: ConveniencePlugin
+version: '1.0-SNAPSHOT'
+main: com.github.jw010801.conveniencePlugin.ConveniencePlugin
+api-version: '1.21'
