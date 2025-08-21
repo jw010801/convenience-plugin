@@ -18,7 +18,7 @@ import java.util.UUID;
 
 public final class ConveniencePlugin extends JavaPlugin {
     
-    private Map<UUID, Location> playerHomes = new HashMap<>();
+    private final Map<UUID, Location> playerHomes = new HashMap<>();
     private File homeDataFile;
     private FileConfiguration homeData;
 
@@ -41,32 +41,29 @@ public final class ConveniencePlugin extends JavaPlugin {
     
     @Override
     public boolean onCommand(@NotNull CommandSender sender, @NotNull Command command, 
-                           @NotNull String label, @NotNull String[] args) {
+                           @NotNull String label, @NotNull String @NotNull [] args) {
         
         // 플레이어만 사용 가능한 명령어들
-        if (!(sender instanceof Player)) {
+        if (!(sender instanceof Player player)) {
             sender.sendMessage("§c이 명령어는 플레이어만 사용할 수 있습니다.");
             return true;
         }
         
-        Player player = (Player) sender;
-        
-        switch (command.getName().toLowerCase()) {
-            case "spawn":
+        return switch (command.getName().toLowerCase()) {
+            case "spawn" -> {
                 handleSpawnCommand(player);
-                return true;
-                
-            case "sethome":
+                yield true;
+            }
+            case "sethome" -> {
                 handleSetHomeCommand(player);
-                return true;
-                
-            case "home":
+                yield true;
+            }
+            case "home" -> {
                 handleHomeCommand(player);
-                return true;
-                
-            default:
-                return false;
-        }
+                yield true;
+            }
+            default -> false;
+        };
     }
     
     private void handleSpawnCommand(Player player) {
@@ -79,12 +76,15 @@ public final class ConveniencePlugin extends JavaPlugin {
     
     private void handleSetHomeCommand(Player player) {
         Location currentLocation = player.getLocation();
+        
+        // final Map이어도 put() 작업은 문제없이 작동합니다
         playerHomes.put(player.getUniqueId(), currentLocation);
         
         // 데이터 저장
         saveHomeData();
         
         player.sendMessage("§a현재 위치가 집으로 설정되었습니다!");
+        getLogger().info("플레이어 " + player.getName() + "이(가) 집을 설정했습니다. (총 " + playerHomes.size() + "명의 플레이어가 집을 보유 중)");
     }
     
     private void handleHomeCommand(Player player) {
@@ -103,11 +103,20 @@ public final class ConveniencePlugin extends JavaPlugin {
     private void initializeHomeData() {
         homeDataFile = new File(getDataFolder(), "homes.yml");
         if (!homeDataFile.exists()) {
-            homeDataFile.getParentFile().mkdirs();
+            File parentDir = homeDataFile.getParentFile();
+            if (parentDir != null && !parentDir.mkdirs() && !parentDir.exists()) {
+                getLogger().severe("플러그인 데이터 폴더를 생성할 수 없습니다: " + parentDir.getAbsolutePath());
+                return;
+            }
+            
             try {
-                homeDataFile.createNewFile();
+                if (!homeDataFile.createNewFile()) {
+                    getLogger().severe("홈 데이터 파일을 생성할 수 없습니다: " + homeDataFile.getAbsolutePath());
+                    return;
+                }
             } catch (IOException e) {
-                getLogger().severe("홈 데이터 파일을 생성할 수 없습니다: " + e.getMessage());
+                getLogger().severe("홈 데이터 파일을 생성하는 중 오류 발생: " + e.getMessage());
+                return;
             }
         }
         homeData = YamlConfiguration.loadConfiguration(homeDataFile);
@@ -118,6 +127,12 @@ public final class ConveniencePlugin extends JavaPlugin {
             try {
                 UUID playerId = UUID.fromString(key);
                 String worldName = homeData.getString(key + ".world");
+                
+                if (worldName == null) {
+                    getLogger().warning("플레이어 " + key + "의 월드 정보가 없습니다.");
+                    continue;
+                }
+                
                 double x = homeData.getDouble(key + ".x");
                 double y = homeData.getDouble(key + ".y");
                 double z = homeData.getDouble(key + ".z");
@@ -128,9 +143,11 @@ public final class ConveniencePlugin extends JavaPlugin {
                 if (world != null) {
                     Location location = new Location(world, x, y, z, yaw, pitch);
                     playerHomes.put(playerId, location);
+                } else {
+                    getLogger().warning("플레이어 " + key + "의 월드 '" + worldName + "'을(를) 찾을 수 없습니다.");
                 }
             } catch (Exception e) {
-                getLogger().warning("플레이어 " + key + "의 홈 데이터를 불러오는 중 오류가 발생했습니다.");
+                getLogger().warning("플레이어 " + key + "의 홈 데이터를 불러오는 중 오류가 발생했습니다: " + e.getMessage());
             }
         }
     }
