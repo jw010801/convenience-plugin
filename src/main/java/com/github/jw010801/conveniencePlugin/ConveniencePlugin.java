@@ -11,7 +11,6 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.File;
-import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -19,23 +18,37 @@ import java.util.UUID;
 public final class ConveniencePlugin extends JavaPlugin {
     
     private final Map<UUID, Location> playerHomes = new HashMap<>();
-    private File homeDataFile;
-    private FileConfiguration homeData;
+    private DatabaseManager databaseManager;
 
     @Override
     public void onEnable() {
-        // 플러그인 시작 로그
         getLogger().info("ConveniencePlugin이 활성화되었습니다!");
         
-        // 홈 데이터 파일 초기화
-        initializeHomeData();
-        loadHomeData();
+        try {
+            // 데이터베이스 관리자 초기화
+            databaseManager = new DatabaseManager(this);
+            databaseManager.initialize();
+            
+            // 기존 YAML 데이터가 있다면 마이그레이션
+            migrateFromYamlIfNeeded();
+            
+            // DB에서 모든 홈 데이터 로드
+            playerHomes.putAll(databaseManager.loadAllHomes());
+            
+            getLogger().info("데이터베이스 연동 완료! (SQLite + HikariCP)");
+            
+        } catch (Exception e) {
+            getLogger().severe("플러그인 초기화 실패: " + e.getMessage());
+            getServer().getPluginManager().disablePlugin(this);
+        }
     }
 
     @Override
     public void onDisable() {
-        // 홈 데이터 저장
-        saveHomeData();
+        // 데이터베이스 연결 종료
+        if (databaseManager != null) {
+            databaseManager.shutdown();
+        }
         getLogger().info("ConveniencePlugin이 비활성화되었습니다!");
     }
     
@@ -62,6 +75,14 @@ public final class ConveniencePlugin extends JavaPlugin {
                 handleHomeCommand(player);
                 yield true;
             }
+            case "delhome" -> {
+                handleDelHomeCommand(player);
+                yield true;
+            }
+            case "status" -> {
+                handleStatusCommand(player);
+                yield true;
+            }
             default -> false;
         };
     }
@@ -76,12 +97,11 @@ public final class ConveniencePlugin extends JavaPlugin {
     
     private void handleSetHomeCommand(Player player) {
         Location currentLocation = player.getLocation();
+        UUID playerUuid = player.getUniqueId();
         
-        // final Map이어도 put() 작업은 문제없이 작동합니다
-        playerHomes.put(player.getUniqueId(), currentLocation);
-        
-        // 데이터 저장
-        saveHomeData();
+        // 메모리와 데이터베이스에 동시 저장
+        playerHomes.put(playerUuid, currentLocation);
+        databaseManager.savePlayerHome(playerUuid, currentLocation);
         
         player.sendMessage("§a현재 위치가 집으로 설정되었습니다!");
         getLogger().info("플레이어 " + player.getName() + "이(가) 집을 설정했습니다. (총 " + playerHomes.size() + "명의 플레이어가 집을 보유 중)");
@@ -100,75 +120,97 @@ public final class ConveniencePlugin extends JavaPlugin {
         player.sendMessage("§a집으로 텔레포트되었습니다!");
     }
     
-    private void initializeHomeData() {
-        homeDataFile = new File(getDataFolder(), "homes.yml");
-        if (!homeDataFile.exists()) {
-            File parentDir = homeDataFile.getParentFile();
-            if (parentDir != null && !parentDir.mkdirs() && !parentDir.exists()) {
-                getLogger().severe("플러그인 데이터 폴더를 생성할 수 없습니다: " + parentDir.getAbsolutePath());
-                return;
-            }
-            
-            try {
-                if (!homeDataFile.createNewFile()) {
-                    getLogger().severe("홈 데이터 파일을 생성할 수 없습니다: " + homeDataFile.getAbsolutePath());
-                    return;
-                }
-            } catch (IOException e) {
-                getLogger().severe("홈 데이터 파일을 생성하는 중 오류 발생: " + e.getMessage());
-                return;
-            }
-        }
-        homeData = YamlConfiguration.loadConfiguration(homeDataFile);
-    }
-    
-    private void loadHomeData() {
-        for (String key : homeData.getKeys(false)) {
-            try {
-                UUID playerId = UUID.fromString(key);
-                String worldName = homeData.getString(key + ".world");
-                
-                if (worldName == null) {
-                    getLogger().warning("플레이어 " + key + "의 월드 정보가 없습니다.");
-                    continue;
-                }
-                
-                double x = homeData.getDouble(key + ".x");
-                double y = homeData.getDouble(key + ".y");
-                double z = homeData.getDouble(key + ".z");
-                float yaw = (float) homeData.getDouble(key + ".yaw");
-                float pitch = (float) homeData.getDouble(key + ".pitch");
-                
-                World world = getServer().getWorld(worldName);
-                if (world != null) {
-                    Location location = new Location(world, x, y, z, yaw, pitch);
-                    playerHomes.put(playerId, location);
-                } else {
-                    getLogger().warning("플레이어 " + key + "의 월드 '" + worldName + "'을(를) 찾을 수 없습니다.");
-                }
-            } catch (Exception e) {
-                getLogger().warning("플레이어 " + key + "의 홈 데이터를 불러오는 중 오류가 발생했습니다: " + e.getMessage());
-            }
-        }
-    }
-    
-    private void saveHomeData() {
-        for (Map.Entry<UUID, Location> entry : playerHomes.entrySet()) {
-            String playerId = entry.getKey().toString();
-            Location location = entry.getValue();
-            
-            homeData.set(playerId + ".world", location.getWorld().getName());
-            homeData.set(playerId + ".x", location.getX());
-            homeData.set(playerId + ".y", location.getY());
-            homeData.set(playerId + ".z", location.getZ());
-            homeData.set(playerId + ".yaw", location.getYaw());
-            homeData.set(playerId + ".pitch", location.getPitch());
+    private void handleDelHomeCommand(Player player) {
+        UUID playerId = player.getUniqueId();
+        
+        if (!playerHomes.containsKey(playerId)) {
+            player.sendMessage("§c삭제할 집이 없습니다.");
+            return;
         }
         
+        // 메모리와 데이터베이스에서 모두 삭제
+        playerHomes.remove(playerId);
+        databaseManager.deletePlayerHome(playerId);
+        
+        player.sendMessage("§a집이 성공적으로 삭제되었습니다!");
+        getLogger().info("플레이어 " + player.getName() + "이(가) 집을 삭제했습니다.");
+    }
+    
+    private void handleStatusCommand(Player player) {
+        boolean isDbConnected = databaseManager.isConnected();
+        int totalHomes = playerHomes.size();
+        
+        // DB에서 직접 플레이어 홈 조회 (getPlayerHome 메서드 활용)
+        Location dbHome = databaseManager.getPlayerHome(player.getUniqueId());
+        boolean hasHomeInDb = (dbHome != null);
+        
+        player.sendMessage("§6=== ConveniencePlugin 상태 ===");
+        player.sendMessage("§7데이터베이스 연결: " + (isDbConnected ? "§a정상" : "§c오류"));
+        player.sendMessage("§7전체 집 개수: §e" + totalHomes + "개");
+        player.sendMessage("§7내 집 상태: " + (hasHomeInDb ? "§a설정됨" : "§c없음"));
+        
+        if (player.hasPermission("convenienceplugin.admin")) {
+            player.sendMessage("§7플러그인 버전: §e1.0-SNAPSHOT");
+            player.sendMessage("§7데이터베이스: §eSQLite + HikariCP");
+        }
+    }
+    
+    /**
+     * 기존 YAML 데이터가 있다면 SQLite 데이터베이스로 마이그레이션합니다
+     */
+    private void migrateFromYamlIfNeeded() {
+        File homeDataFile = new File(getDataFolder(), "homes.yml");
+        
+        if (!homeDataFile.exists()) {
+            getLogger().info("기존 YAML 데이터 파일이 없습니다. 새로운 데이터베이스로 시작합니다.");
+            return;
+        }
+        
+        getLogger().info("기존 YAML 데이터를 발견했습니다. 데이터베이스로 마이그레이션을 시작합니다...");
+        
         try {
-            homeData.save(homeDataFile);
-        } catch (IOException e) {
-            getLogger().severe("홈 데이터를 저장하는 중 오류가 발생했습니다: " + e.getMessage());
+            FileConfiguration homeData = YamlConfiguration.loadConfiguration(homeDataFile);
+            int migratedCount = 0;
+            
+            for (String key : homeData.getKeys(false)) {
+                try {
+                    UUID playerId = UUID.fromString(key);
+                    String worldName = homeData.getString(key + ".world");
+                    
+                    if (worldName == null) {
+                        getLogger().warning("플레이어 " + key + "의 월드 정보가 없습니다. 건너뜁니다.");
+                        continue;
+                    }
+                    
+                    double x = homeData.getDouble(key + ".x");
+                    double y = homeData.getDouble(key + ".y");
+                    double z = homeData.getDouble(key + ".z");
+                    float yaw = (float) homeData.getDouble(key + ".yaw");
+                    float pitch = (float) homeData.getDouble(key + ".pitch");
+                    
+                    World world = getServer().getWorld(worldName);
+                    if (world != null) {
+                        Location location = new Location(world, x, y, z, yaw, pitch);
+                        databaseManager.savePlayerHome(playerId, location);
+                        migratedCount++;
+                    } else {
+                        getLogger().warning("플레이어 " + key + "의 월드 '" + worldName + "'을(를) 찾을 수 없습니다. 건너뜁니다.");
+                    }
+                } catch (Exception e) {
+                    getLogger().warning("플레이어 " + key + "의 데이터 마이그레이션 중 오류 발생: " + e.getMessage());
+                }
+            }
+            
+            getLogger().info("YAML → SQLite 마이그레이션 완료! (총 " + migratedCount + "개 데이터 이전)");
+            
+            // 마이그레이션 완료 후 백업 파일로 이름 변경
+            File backupFile = new File(getDataFolder(), "homes.yml.backup");
+            if (homeDataFile.renameTo(backupFile)) {
+                getLogger().info("기존 YAML 파일을 homes.yml.backup으로 백업했습니다.");
+            }
+            
+        } catch (Exception e) {
+            getLogger().severe("YAML 데이터 마이그레이션 실패: " + e.getMessage());
         }
     }
 }

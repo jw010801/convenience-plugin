@@ -18,3 +18,11 @@ commands:
     description: 설정한 집으로 텔레포트합니다
     usage: /home
     aliases: [집]
+  delhome:
+    description: 설정한 집을 삭제합니다
+    usage: /delhome
+    aliases: [집삭제]
+  status:
+    description: 플러그인 상태를 확인합니다
+    usage: /status
+    aliases: [상태]
